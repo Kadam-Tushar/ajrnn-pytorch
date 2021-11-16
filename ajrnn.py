@@ -13,14 +13,18 @@ Missing_value = 128.0
 # Set device cuda for GPU if it's available otherwise run on the CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def loss_D(scores, target):
-    criterion = nn.CrossEntropyLoss()
-    loss = criterion(scores, target)
+def loss_D(scores,masks):
+    n = scores.shape[0]
+    loss = torch.sum((1-masks) * torch.log(1-nn.functional.sigmoid(scores)))
+    loss += torch.sum(masks* torch.log(nn.functional.sigmoid(scores)))
+    loss /= -n
+
     return loss
+    
 
 def loss_adv(scores, masks):
     n = scores.shape[0]
-    return torch.sum((1-masks) * log(1-nn.functional.sigmoid(scores)))/n
+    return torch.sum((1-masks) * torch.log(1-nn.functional.sigmoid(scores)))/n
 
 def loss_cls(logits, labels):
     return nn.functional.cross_entropy(logits, labels)
@@ -64,29 +68,6 @@ class Config(object):
     train_data_filename = None
     test_data_filename = None
 
-def train_G(config, model, train_loader):
-    model = model.to(device)
-
-    # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
-
-    # Train network
-    for epoch in range(config.D_epoch):
-        for batch_idx, (data, masks, targets) in enumerate(tqdm(train_loader)):
-            data = data.to(device)
-            targets = targets.to(device)
-
-            # forward
-            hidden_state, completed_sequence, imputation_sequence = model(data)
-            loss = loss_adv()   #TODO
-
-            # backward
-            optimizer.zero_grad()
-            loss.backward()
-
-            # step
-            optimizer.step()
-
 class Generator(nn.Module):
     def __init__(self, config):
         super(Generator, self).__init__()
@@ -129,76 +110,53 @@ class Generator(nn.Module):
                     (1-masks[:, time_step,:])*imputation_sequence[:,time_step,:]
                 )
 
-        return hidden, completed_sequence, imputation_sequence
+        return hidden_state,completed_sequence, imputation_sequence
 
     def init_hidden(self):
         return torch.zeros(self.layer_num, self.batch_size, self.hidden_size)
 
 
-def train_D(config,model,train_loader):
-        model = model.to(device=device)
+# def train_D(config,model,train_loader):
+#         model = model.to(device=device)
 
-        # Loss and optimizer
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+#         # Loss and optimizer
+#         criterion = nn.CrossEntropyLoss()
+#         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
 
-        # Train Network
-        for epoch in range(config.D_epoch):
-            for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
-                # Get data to cuda if possible
-                data = data.to(device=device)
-                targets = targets.to(device=device)
+#         # Train Network
+#         for epoch in range(config.D_epoch):
+#             for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
+#                 # Get data to cuda if possible
+#                 data = data.to(device=device)
+#                 targets = targets.to(device=device)
 
-                # Get to correct shape
-                data = data.reshape(data.shape[0], -1)
+#                 # Get to correct shape
+#                 data = data.reshape(data.shape[0], -1)
 
-                # forward
-                scores = model(data)
-                loss = criterion(scores, targets)
+#                 # forward
+#                 scores = model(data)
+#                 loss = criterion(scores, targets)
 
-                # backward
-                optimizer.zero_grad()
-                loss.backward()
+#                 # backward
+#                 optimizer.zero_grad()
+#                 loss.backward()
 
-                # gradient descent or adam step
-                optimizer.step()
+#                 # gradient descent or adam step
+#                 optimizer.step()
 
 class Discriminator(nn.Module):
     def __init__(self,config):
         super(Discriminator, self).__init__()
         self.name = "Discriminator"
-        self.fc1 = nn.Linear(config.num_steps,config.num_steps)
-        self.fc2 = nn.Linear(config.num_steps,int(config.num_steps)//2)
-        self.fc3 = nn.Linear(int(config.num_steps)//2,config.num_steps)
+        self.fc1 = nn.Linear(config.num_steps-1,config.num_steps-1)
+        self.fc2 = nn.Linear(config.num_steps-1,int(config.num_steps)//2)
+        self.fc3 = nn.Linear(int(config.num_steps)//2,config.num_steps-1)
 
     def forward(self, x):
         x = F.tanh(self.fc1(x))
         x= F.tanh(self.fc2(x))
         predict_mask = self.fc3(x)
         return predict_mask
-
-def train_cls(config, model, train_loader):
-    model = model.to(device)
-
-    # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
-
-    # Train network
-    for epoch in range(config.D_epoch):
-        for batch_idx, (data, masks, targets) in enumerate(tqdm(train_loader)):
-            data = data.to(device)
-            targets = targets.to(device)
-
-            # forward
-            logits = model(data)
-            loss = loss_cls(logits, targets)
-
-            # backward
-            optimizer.zero_grad()
-            loss.backward()
-
-            # step
-            optimizer.step()
 
 class Classifier(nn.Module):
     def __init__(self, config):
@@ -227,18 +185,47 @@ def main(config):
 
     test_label, test_classes = transfer_labels(test_labels)
     print ('Test data completed-------------')
-
-    G = Generator(config)
-    # G.build_model() remaining 
-    real_pre = prediction * (1 - M) + prediction_target * M
-    real_pre = torch.reshape(real_pre,[config.batch_size,(config.num_steps-1)*config.input_dimension_size])
-    D = Discriminator(config)
-    predict_M = D (real_pre)
-    predict_M = torch.reshape(predict_M,[-1,(config.num_steps-1)*config.input_dimension_size])
-
 #------------------------------------------------train---------------------------------------------------
-    Epoch = config.epoch
+    G = Generator(config).to(device)
+    C = Classifier(config).to(device)
+    D = Discriminator(config).to(device)
+    G_optim = optim.Adam(G.parameters(), lr=config.learning_rate)
+    C_optim = optim.Adam(C.parameters(), lr=config.learning_rate)
+    D_optim = optim.Adam(D.parameters(), lr=config.learning_rate)
 
+    for epoch in range(config.epoch):
+            for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
+                # Get data to cuda if possible
+                data = data.to(device=device)
+                masks = masks.to(device=device)
+                targets = targets.to(device=device)
+                
+                hidden_state, completed_seq, imputation_seq = G(data)
+                logits = C(hidden_state)
+                scores = D(completed_seq)
+
+                #loss calculations
+                l_D = loss_D(scores,masks)
+                l_imp = loss_imp(completed_seq,imputation_seq,masks)
+                l_cls = loss_cls(logits,targets)
+                l_adv = loss_adv(scores,masks)
+
+                #backward
+                D_optim.zero_grad()
+                l_D.backward()
+
+                # gradient descent or adam step
+                D_optim.step()
+
+                # Combined loss 
+                l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv 
+                
+                C_optim.zero_grad()
+                G_optim.zero_grad()
+                l_ajrnn.backward()
+
+                C_optim.step()
+                G_optim.step()
 
 
 
