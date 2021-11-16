@@ -6,7 +6,8 @@ from torch import nn
 import torch.nn.functional as F
 from torch import optim
 from tqdm import tqdm
-from torch.utils.data import DataLoader  # Gives easier dataset managment by creating mini batches etc.
+from torch.utils.data import DataLoader
+from data import ITSCDataset
 
 Missing_value = 128.0
 
@@ -139,22 +140,13 @@ class Classifier(nn.Module):
 def main(config):
     print ('Loading data && Transform data--------------------')
     print (config.train_data_filename)
-    train_data, train_label = load_data(config.train_data_filename)
+    train_dataset = ITSCDataset(config.train_data_filename)
+    test_dataset = ITSCDataset(config.test_data_filename)
 
-    #For univariate
-    config.num_steps = train_data.shape[1]
-    config.input_dimension_size = 1
-
-    train_label, num_classes = transfer_labels(train_label)
-    config.class_num = num_classes
-
-    print ('Train Label:', np.unique(train_label))
-    print ('Train data completed-------------')
-
-    test_data, test_labels = load_data(config.test_data_filename)
-
-    test_label, test_classes = transfer_labels(test_labels)
-    print ('Test data completed-------------')
+    train_loader = DataLoader(train_dataset, batch_size=10,
+                        shuffle=True, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=4,
+                        shuffle=True, num_workers=0)
 
     # ---------------train------------------
     G = Generator(config).to(device)
@@ -165,42 +157,41 @@ def main(config):
     D_optim = optim.Adam(D.parameters(), lr=config.learning_rate)
 
     for epoch in range(config.epoch):
-            for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
-                # Get data to cuda if possible
-                data = data.to(device=device)
-                masks = masks.to(device=device)
-                targets = targets.to(device=device)
+        for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
+            # Get data to cuda if possible
+            data = data.to(device=device)
+            masks = masks.to(device=device)
+            targets = targets.to(device=device)
 
-                hidden_state, completed_seq, imputation_seq = G(data)
-                logits = C(hidden_state)
-                scores = D(completed_seq)
+            hidden_state, completed_seq, imputation_seq = G(data)
+            logits = C(hidden_state)
+            scores = D(completed_seq)
 
-                #loss calculations
-                l_D = loss_D(scores,masks)
-                l_imp = loss_imp(completed_seq,imputation_seq,masks)
-                l_cls = loss_cls(logits,targets)
-                l_adv = loss_adv(scores,masks)
+            #loss calculations
+            l_D = loss_D(scores,masks)
+            l_imp = loss_imp(completed_seq,imputation_seq,masks)
+            l_cls = loss_cls(logits,targets)
+            l_adv = loss_adv(scores,masks)
 
-                #backward
-                D_optim.zero_grad()
-                l_D.backward()
+            #backward
+            D_optim.zero_grad()
+            l_D.backward()
 
-                # gradient descent or adam step
-                D_optim.step()
+            # gradient descent or adam step
+            D_optim.step()
 
-                # Combined loss 
-                l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv 
+            # Combined loss
+            l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv
 
-                C_optim.zero_grad()
-                G_optim.zero_grad()
-                l_ajrnn.backward()
+            C_optim.zero_grad()
+            G_optim.zero_grad()
+            l_ajrnn.backward()
 
-                C_optim.step()
-                G_optim.step()
+            C_optim.step()
+            G_optim.step()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-
     parser.add_argument('--batch_size',type=int,required=True)
     parser.add_argument('--epoch',type=int,required=True)
     parser.add_argument('--lamda_D',type=float,required=True,help='coefficient that adjusts gradients propagated from discriminator')
