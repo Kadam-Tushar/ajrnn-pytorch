@@ -13,13 +13,19 @@ Missing_value = 128.0
 # Set device cuda for GPU if it's available otherwise run on the CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def loss_D(scores,target):
+    criterion = nn.CrossEntropyLoss()
+    loss = criterion(scores, target)
+    return loss
 
-def RNN_cell(type,input_size ,hidden_size ):
-	if type == 'LSTM':
-		cell = nn.LSTMCell(input_size,hidden_size)
-	elif type == 'GRU':
-		cell = nn.GRUCell(input_size, hidden_size)
-	return cell
+def loss_cls(logits, labels):
+    return nn.functional.cross_entropy(logits, labels)
+
+def loss_imp(completed_sequence, imputation_sequence, masks):
+    batch_size = completed_sequence.shape[0]
+    return torch.mean(
+            torch.square((completed_sequence-imputation_sequence)*masks)
+           ) / batch_size
 
 def load_data(filename):
 	data_label = np.loadtxt(filename,delimiter=',')
@@ -38,8 +44,6 @@ def transfer_labels(labels):
 		labels[i] = new_label
 	return labels, num_classes
 
-
-
 class Config(object):
     layer_num = 1
     hidden_size = 100
@@ -56,12 +60,61 @@ class Config(object):
     train_data_filename = None
     test_data_filename = None
 
+class Generator(nn.Module):
+    def __init__(self, config):
+        super(Generator, self).__init__()
+        self.batch_size = config.batch_size
+        self.hidden_size = config.hidden_size
+        self.num_steps = config.num_steps
+        self.input_dimension_size = config.input_dimension_size
+        self.cell_type = config.cell_type
+        self.lamda = config.lamda
+        self.class_num = config.class_num
+        self.layer_num = config.layer_num
+
+        self.rnn_layers = [
+            nn.GRUCell(input_size = self.input_dimension_size,
+                       hidden_size = self.hidden_size) \
+            for _ in range(self.layer_num)
+        ]
+
+        self.imp_projection = nn.Linear(hidden_size, input_dimension_size)
+
+    def forward(self, x, masks):
+        # x is a batch of complete sequences, each of length num_steps
+        # masks is a batch of masks for each sequence, same in dimensions as x
+        imputation_sequence = torch.zeros(
+            self.batch_size, self.num_steps-1, self.input_dimension_size
+        )
+        completed_sequence = torch.zeros(
+            self.batch_size, self.num_steps-1, self.input_dimension_size
+        )
+
+        hidden_state = self.init_hidden()
+        for time_step in range(self.num_steps):
+            hidden_state = self.rnn_layers[0](x[:, time_step, :], hidden_state)
+
+            if time_step < self.num_steps - 1:
+                imputation_sequence[:, time_step, :] = \
+                    self.imp_projection(hidden_state)
+                completed_sequence[:, time_step, :] = \
+                    masks[time_step] * x[:, time_step, :] + \
+                    (1-masks[:, time_step,:])*imputation_sequence[:,time_step,:]
+                )
+
+        return hidden, completed_sequence, imputation_sequence
+
+    def init_hidden(self):
+        return torch.zeros(self.layer_num, self.batch_size, self.hidden_size)
+
+
 def train_D(config,model,train_loader):
         model = model.to(device=device)
+
         # Loss and optimizer
-        
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+
         # Train Network
         for epoch in range(config.D_epoch):
             for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
@@ -82,16 +135,6 @@ def train_D(config,model,train_loader):
 
                 # gradient descent or adam step
                 optimizer.step()
-        
-def loss_D(scores,target):
-    criterion = nn.CrossEntropyLoss()
-    loss = criterion(scores, target)
-    return loss
-
-
-
-
-    
 
 class Discriminator(nn.Module):
     def __init__(self,config):
@@ -100,8 +143,6 @@ class Discriminator(nn.Module):
         self.fc1 = nn.Linear(config.num_steps,config.num_steps)
         self.fc2 = nn.Linear(config.num_steps,int(config.num_steps)//2)
         self.fc3 = nn.Linear(int(config.num_steps)//2,config.num_steps)
-        
-
 
     def forward(self, x):
         x = F.tanh(self.fc1(x))
@@ -109,9 +150,13 @@ class Discriminator(nn.Module):
         predict_mask = self.fc3(x)
         return predict_mask
 
-    
-    
+class Classifier(nn.Module):
+    def __init__(self, config):
+        super(Classifier, self).__init__()
+        self.fc1 = nn.Linear(config.hidden_size, config.class_num)
 
+    def forward(self, x):
+        return self.fc1(x)
 
 def main(config):
     print ('Loading data && Transform data--------------------')
@@ -140,15 +185,9 @@ def main(config):
     D = Discriminator(config)
     predict_M = D (real_pre)
     predict_M = torch.reshape(predict_M,[-1,(config.num_steps-1)*config.input_dimension_size])
-    
+
 #------------------------------------------------train---------------------------------------------------
     Epoch = config.epoch
-    
-
-
-
-
-
 
 
 
