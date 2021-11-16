@@ -20,7 +20,6 @@ def loss_D(scores,masks):
     loss /= -n
 
     return loss
-    
 
 def loss_adv(scores, masks):
     n = scores.shape[0]
@@ -115,35 +114,6 @@ class Generator(nn.Module):
     def init_hidden(self):
         return torch.zeros(self.layer_num, self.batch_size, self.hidden_size)
 
-
-# def train_D(config,model,train_loader):
-#         model = model.to(device=device)
-
-#         # Loss and optimizer
-#         criterion = nn.CrossEntropyLoss()
-#         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
-
-#         # Train Network
-#         for epoch in range(config.D_epoch):
-#             for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
-#                 # Get data to cuda if possible
-#                 data = data.to(device=device)
-#                 targets = targets.to(device=device)
-
-#                 # Get to correct shape
-#                 data = data.reshape(data.shape[0], -1)
-
-#                 # forward
-#                 scores = model(data)
-#                 loss = criterion(scores, targets)
-
-#                 # backward
-#                 optimizer.zero_grad()
-#                 loss.backward()
-
-#                 # gradient descent or adam step
-#                 optimizer.step()
-
 class Discriminator(nn.Module):
     def __init__(self,config):
         super(Discriminator, self).__init__()
@@ -185,7 +155,8 @@ def main(config):
 
     test_label, test_classes = transfer_labels(test_labels)
     print ('Test data completed-------------')
-#------------------------------------------------train---------------------------------------------------
+
+    # ---------------train------------------
     G = Generator(config).to(device)
     C = Classifier(config).to(device)
     D = Discriminator(config).to(device)
@@ -199,7 +170,7 @@ def main(config):
                 data = data.to(device=device)
                 masks = masks.to(device=device)
                 targets = targets.to(device=device)
-                
+
                 hidden_state, completed_seq, imputation_seq = G(data)
                 logits = C(hidden_state)
                 scores = D(completed_seq)
@@ -219,15 +190,13 @@ def main(config):
 
                 # Combined loss 
                 l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv 
-                
+
                 C_optim.zero_grad()
                 G_optim.zero_grad()
                 l_ajrnn.backward()
 
                 C_optim.step()
                 G_optim.step()
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
