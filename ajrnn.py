@@ -68,7 +68,7 @@ class Generator(nn.Module):
 
         self.rnn_layers = [
             nn.GRUCell(input_size = self.input_dimension_size,
-                       hidden_size = self.hidden_size) \
+                       hidden_size = self.hidden_size).to(device) \
             for _ in range(self.layer_num)
         ]
 
@@ -80,12 +80,12 @@ class Generator(nn.Module):
         batch_size = x.shape[0]
         imputation_sequence = torch.zeros(
             batch_size, self.num_steps-1, self.input_dimension_size
-        )
+        ).to(device)
         completed_sequence = torch.zeros(
             batch_size, self.num_steps-1, self.input_dimension_size
-        )
+        ).to(device)
 
-        hidden_state = self.init_hidden(batch_size)
+        hidden_state = self.init_hidden(batch_size).to(device)
         for time_step in range(self.num_steps):
             for layer in range(self.layer_num):
                 hidden_state = self.rnn_layers[layer](x[:, time_step, :], hidden_state)
@@ -177,6 +177,9 @@ def main(config):
             samples += data.shape[0]
 
             hidden_state, completed_seq, imputation_seq = G(data, masks)
+            # hidden_state = hidden_state.to(device)
+            # completed_seq = completed_seq.to(device)
+            # imputation_seq = imputation_sequence.to(device)
             logits = C(hidden_state)
             with torch.no_grad():
                 probs = torch.softmax(logits.detach(), dim=1)
