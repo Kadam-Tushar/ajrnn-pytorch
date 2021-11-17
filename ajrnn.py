@@ -15,21 +15,26 @@ Missing_value = 128.0
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def loss_D(scores,masks):
+    masks = masks[:, 1:, :]
+    masks = masks.reshape(masks.shape[0], -1)
     n = scores.shape[0]
-    loss = torch.sum((1-masks) * torch.log(1-nn.functional.sigmoid(scores)))
-    loss += torch.sum(masks* torch.log(nn.functional.sigmoid(scores)))
+    loss = torch.sum((1-masks) * torch.log(1-torch.sigmoid(scores)))
+    loss += torch.sum(masks* torch.log(torch.sigmoid(scores)))
     loss /= -n
 
     return loss
 
 def loss_adv(scores, masks):
     n = scores.shape[0]
-    return torch.sum((1-masks) * torch.log(1-nn.functional.sigmoid(scores)))/n
+    masks = masks[:, 1:, :]
+    masks = masks.reshape(masks.shape[0], -1)
+    return torch.sum((1-masks) * torch.log(1-torch.sigmoid(scores)))/n
 
 def loss_cls(logits, labels):
     return nn.functional.cross_entropy(logits, labels)
 
 def loss_imp(completed_sequence, imputation_sequence, masks):
+    masks = masks[:, 1:, :]
     batch_size = completed_sequence.shape[0]
     return torch.mean(
             torch.square((completed_sequence-imputation_sequence)*masks)
@@ -41,16 +46,6 @@ def load_data(filename):
 	label = data_label[:,0].astype(np.int32)
 	return data, label
 
-def transfer_labels(labels):
-	#some labels are [1,2,4,11,13] and is transfer to standard label format [0,1,2,3,4]
-	indexes = np.unique(labels)
-	num_classes = indexes.shape[0]
-	num_samples = labels.shape[0]
-
-	for i in range(num_samples):
-		new_label = np.argwhere( labels[i] == indexes )[0][0]
-		labels[i] = new_label
-	return labels, num_classes
 
 class Config(object):
     layer_num = 1
@@ -86,7 +81,7 @@ class Generator(nn.Module):
             for _ in range(self.layer_num)
         ]
 
-        self.imp_projection = nn.Linear(hidden_size, input_dimension_size)
+        self.imp_projection = nn.Linear(self.hidden_size, self.input_dimension_size)
 
     def forward(self, x, masks):
         # x is a batch of complete sequences, each of length num_steps
@@ -100,32 +95,39 @@ class Generator(nn.Module):
 
         hidden_state = self.init_hidden()
         for time_step in range(self.num_steps):
-            hidden_state = self.rnn_layers[0](x[:, time_step, :], hidden_state)
+            for layer in range(self.layer_num):
+                hidden_state = self.rnn_layers[layer](x[:, time_step, :], hidden_state)
 
             if time_step < self.num_steps - 1:
                 imputation_sequence[:, time_step, :] = \
                     self.imp_projection(hidden_state)
                 completed_sequence[:, time_step, :] = \
-                    masks[time_step] * x[:, time_step, :] + \
+                    masks[:, time_step, :] * x[:, time_step, :] + \
                     (1-masks[:, time_step,:])*imputation_sequence[:,time_step,:]
-                )
 
         return hidden_state,completed_sequence, imputation_sequence
 
     def init_hidden(self):
-        return torch.zeros(self.layer_num, self.batch_size, self.hidden_size)
+        return torch.zeros(self.batch_size, self.hidden_size)
 
 class Discriminator(nn.Module):
     def __init__(self,config):
         super(Discriminator, self).__init__()
         self.name = "Discriminator"
-        self.fc1 = nn.Linear(config.num_steps-1,config.num_steps-1)
-        self.fc2 = nn.Linear(config.num_steps-1,int(config.num_steps)//2)
-        self.fc3 = nn.Linear(int(config.num_steps)//2,config.num_steps-1)
+        self.fc1 = nn.Linear(
+                (config.num_steps-1)*config.input_dimension_size,
+                (config.num_steps-1)*config.input_dimension_size)
+        self.fc2 = nn.Linear(
+                (config.num_steps-1)*config.input_dimension_size,
+                int(config.num_steps)//2*config.input_dimension_size)
+        self.fc3 = nn.Linear(
+                int(config.num_steps)//2*config.input_dimension_size,
+                config.num_steps-1)
 
     def forward(self, x):
-        x = F.tanh(self.fc1(x))
-        x= F.tanh(self.fc2(x))
+        x = x.reshape(x.shape[0], -1)
+        x = torch.tanh(self.fc1(x))
+        x= torch.tanh(self.fc2(x))
         predict_mask = self.fc3(x)
         return predict_mask
 
@@ -138,15 +140,27 @@ class Classifier(nn.Module):
         return self.fc1(x)
 
 def main(config):
+    '''
+    G = Generator(config).to(device)
+    torch.save(G, 'GeneratorInit.pt')
+    return
+    '''
+
     print ('Loading data && Transform data--------------------')
     print (config.train_data_filename)
     train_dataset = ITSCDataset(config.train_data_filename)
     test_dataset = ITSCDataset(config.test_data_filename)
 
-    train_loader = DataLoader(train_dataset, batch_size=10,
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size,
                         shuffle=True, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=4,
+    test_loader = DataLoader(test_dataset, batch_size=config.batch_size,
                         shuffle=True, num_workers=0)
+
+    config.class_num = 50
+    config.num_steps = train_dataset[0][0].shape[0]
+    config.input_dimension_size = train_dataset[0][0].shape[1]
+    print(f'Num steps = {config.num_steps}')
+    print(f'Input dimension size = {config.input_dimension_size}')
 
     # ---------------train------------------
     G = Generator(config).to(device)
@@ -163,7 +177,7 @@ def main(config):
             masks = masks.to(device=device)
             targets = targets.to(device=device)
 
-            hidden_state, completed_seq, imputation_seq = G(data)
+            hidden_state, completed_seq, imputation_seq = G(data, masks)
             logits = C(hidden_state)
             scores = D(completed_seq)
 
@@ -175,6 +189,8 @@ def main(config):
 
             #backward
             D_optim.zero_grad()
+            C_optim.zero_grad()
+            G_optim.zero_grad()
             l_D.backward()
 
             # gradient descent or adam step
@@ -182,9 +198,6 @@ def main(config):
 
             # Combined loss
             l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv
-
-            C_optim.zero_grad()
-            G_optim.zero_grad()
             l_ajrnn.backward()
 
             C_optim.step()
