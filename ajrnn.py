@@ -166,7 +166,6 @@ def main(config):
     for epoch in range(config.epoch):
         epoch_loss_D = 0
         epoch_loss_ajrnn = 0
-        epoch_acc = 0
         samples = 0
         correct = 0
         n_batches = 0
@@ -179,17 +178,11 @@ def main(config):
             samples += data.shape[0]
 
             hidden_state, completed_seq, imputation_seq = G(data, masks)
-            # hidden_state = hidden_state.to(device)
-            # completed_seq = completed_seq.to(device)
-            # imputation_seq = imputation_sequence.to(device)
             logits = C(hidden_state)
             with torch.no_grad():
                 probs = torch.softmax(logits.detach(), dim=1)
                 preds = torch.argmax(probs, dim=1)
                 correct += torch.sum((preds == targets).float()).detach().item()
-                #print(preds)
-                #print(targets)
-                #print(epoch_acc)
             scores = D(completed_seq)
 
             #loss calculations
@@ -198,6 +191,14 @@ def main(config):
             #backward
             D_optim.zero_grad()
             l_D.backward(retain_graph=True)
+
+            '''
+            for p in D.parameters():
+                print("BEFORE L-AJRNN")
+                print(p.grad)
+                break
+            '''
+
             epoch_loss_D += l_D.detach().cpu().item()
 
             # Combined loss
@@ -209,7 +210,17 @@ def main(config):
 
             C_optim.zero_grad()
             G_optim.zero_grad()
+
+            for p in D.parameters(): p.requires_grad_(False)
             l_ajrnn.backward()
+            for p in D.parameters(): p.requires_grad_(True)
+
+            '''
+            for p in D.parameters():
+                print("AFTER L-AJRNN")
+                print(p.grad)
+                break
+            '''
 
             C_optim.step()
             G_optim.step()
