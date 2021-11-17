@@ -125,10 +125,12 @@ class Discriminator(nn.Module):
 class Classifier(nn.Module):
     def __init__(self, config):
         super(Classifier, self).__init__()
-        self.fc1 = nn.Linear(config.hidden_size, config.class_num)
+        self.fc1 = nn.Linear(config.hidden_size,int(config.hidden_size)//2)
+        self.fc2 = nn.Linear(int(config.hidden_size)//2,config.class_num)
 
     def forward(self, x):
-        return self.fc1(x)
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
 
 def main(config):
     '''
