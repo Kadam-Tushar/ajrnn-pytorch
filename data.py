@@ -20,7 +20,7 @@ class ITSCDataset(Dataset):
         self.missing_frac = missing_frac
         arr = np.loadtxt(path, dtype=np.float32, delimiter=',')
         self.labels = arr[:, 0].astype(np.long)
-        self.labels, _ = transfer_labels(self.labels)
+        self.labels, self.num_classes = transfer_labels(self.labels)
         self.data = arr[:, 1:, np.newaxis]
 
     def __len__(self):

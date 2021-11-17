@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from data import ITSCDataset
 
 Missing_value = 128.0
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
 
 # Set device cuda for GPU if it's available otherwise run on the CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,21 +36,23 @@ def loss_imp(completed_sequence, imputation_sequence, masks):
             torch.square((completed_sequence-imputation_sequence)*masks[:, 1:, None])
            ) / batch_size
 
+'''
 class Config(object):
-    layer_num = 1
+    layer_num = 2
     hidden_size = 100
     learning_rate = 1e-3
+    missing_frac = 0.2
     cell_type = 'GRU'
     lamda = 1
     D_epoch = 1
     GPU = '0'
-    '''User defined'''
     batch_size = None   #batch_size for train
     epoch = None    #epoch for train
     lamda_D = None  #epoch for training of Discriminator
     G_epoch = None  #epoch for training of Generator
     train_data_filename = None
     test_data_filename = None
+'''
 
 class Generator(nn.Module):
     def __init__(self, config):
@@ -137,7 +139,7 @@ def main(config):
 
     print ('Loading data && Transform data--------------------')
     print (config.train_data_filename)
-    train_dataset = ITSCDataset(config.train_data_filename)
+    train_dataset = ITSCDataset(config.train_data_filename, config.missing_frac)
     test_dataset = ITSCDataset(config.test_data_filename)
 
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size,
@@ -145,7 +147,7 @@ def main(config):
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size,
                         shuffle=True, num_workers=0)
 
-    config.class_num = 50
+    config.class_num = train_dataset.num_classes
     config.num_steps = train_dataset[0][0].shape[0]
     config.input_dimension_size = train_dataset[0][0].shape[1]
     print(f'Num steps = {config.num_steps}')
@@ -163,6 +165,8 @@ def main(config):
         epoch_loss_D = 0
         epoch_loss_ajrnn = 0
         epoch_acc = 0
+        samples = 0
+        correct = 0
         n_batches = 0
 
         for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
@@ -170,13 +174,17 @@ def main(config):
             data = data.to(device=device)
             masks = masks.to(device=device)
             targets = targets.to(device=device)
+            samples += data.shape[0]
 
             hidden_state, completed_seq, imputation_seq = G(data, masks)
             logits = C(hidden_state)
             with torch.no_grad():
                 probs = torch.softmax(logits.detach(), dim=1)
                 preds = torch.argmax(probs, dim=1)
-                epoch_acc += torch.mean((preds == targets).float()).detach().item()
+                correct += torch.sum((preds == targets).float()).detach().item()
+                #print(preds)
+                #print(targets)
+                #print(epoch_acc)
             scores = D(completed_seq)
 
             #loss calculations
@@ -205,7 +213,7 @@ def main(config):
             n_batches += 1
         print(f'D Loss per batch: {epoch_loss_D/n_batches}')
         print(f'AJ-RNN Loss per batch: {epoch_loss_ajrnn/n_batches}')
-        print(f'Accuracy per batch: {epoch_acc/n_batches*100:.2f}%')
+        print(f'Train Accuracy: {correct/samples*100:.2f}%')
 
 
 if __name__ == "__main__":
@@ -213,6 +221,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size',type=int,required=True)
     parser.add_argument('--epoch',type=int,required=True)
     parser.add_argument('--lamda_D',type=float,required=True,help='coefficient that adjusts gradients propagated from discriminator')
+    parser.add_argument('--missing_frac', type=float, required=False, default=0.2, help='Fraction of missing elements in sequence')
     parser.add_argument('--G_epoch',type=int,required=True,help='frequency of updating AJRNN in an adversarial training epoch')
     parser.add_argument('--train_data_filename',type=str,required=True)
     parser.add_argument('--test_data_filename',type=str,required=True)
