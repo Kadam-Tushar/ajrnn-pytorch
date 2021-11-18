@@ -4,10 +4,12 @@ import argparse
 import torch
 from torch import nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from torch import optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from data import ITSCDataset
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 Missing_value = 128.0
 #torch.autograd.set_detect_anomaly(True)
@@ -75,8 +77,12 @@ class Generator(nn.Module):
         self.rnn_layers = [
             nn.GRUCell(input_size = self.input_dimension_size,
                        hidden_size = self.hidden_size).to(device) \
-            for _ in range(self.layer_num)
         ]
+        self.rnn_layers.extend([
+            nn.GRUCell(input_size = self.hidden_size,
+                       hidden_size = self.hidden_size).to(device) \
+            for _ in range(self.layer_num-1)
+        ])
 
         self.imp_projection = nn.Linear(self.hidden_size, self.input_dimension_size)
 
@@ -91,10 +97,25 @@ class Generator(nn.Module):
         for time_step in range(self.num_steps):
             if time_step == 0:
                 for layer in range(self.layer_num):
-                    hidden_state = self.rnn_layers[layer](x[:, 0, :], hidden_state)
+                    if layer == 0:
+                        hidden_state = self.rnn_layers[layer](
+                            x[:, 0, :], hidden_state
+                        )
+                    else:
+                        hidden_state = self.rnn_layers[layer](
+                            hidden_state, hidden_state
+                        )
             else:
                 for layer in range(self.layer_num):
-                    hidden_state = self.rnn_layers[layer](completed_sequence[time_step-1][:, 0, :], hidden_state)
+                    if layer == 0:
+                        hidden_state = self.rnn_layers[layer](
+                            completed_sequence[time_step-1][:, 0, :],
+                            hidden_state
+                        )
+                    else:
+                        hidden_state = self.rnn_layers[layer](
+                            hidden_state, hidden_state
+                        )
 
 
             if time_step < self.num_steps - 1:
@@ -146,14 +167,7 @@ class Classifier(nn.Module):
         return self.fc3(x)
 
 def main(config):
-    '''
-    G = Generator(config).to(device)
-    torch.save(G, 'GeneratorInit.pt')
-    return
-    '''
-
-    print ('Loading data && Transform data--------------------')
-    print (config.train_data_filename)
+    print (f'Training data: {config.train_data_filename}')
     train_dataset = ITSCDataset(config.train_data_filename, config.missing_frac)
     test_dataset = ITSCDataset(config.test_data_filename)
 
@@ -167,21 +181,27 @@ def main(config):
     config.input_dimension_size = train_dataset[0][0].shape[1]
     print(f'Num steps = {config.num_steps}')
     print(f'Input dimension size = {config.input_dimension_size}')
+    print(f'Num classes = {config.class_num}')
 
     # ---------------train------------------
     G = Generator(config).to(device)
     C = Classifier(config).to(device)
     D = Discriminator(config).to(device)
     G_optim = optim.Adam(G.parameters(), lr=config.learning_rate)
-    C_optim = optim.Adam(C.parameters(), lr=config.learning_rate)
+    C_optim = optim.Adam(C.parameters(), lr=config.learning_rate*2)
     D_optim = optim.Adam(D.parameters(), lr=config.learning_rate)
 
     for epoch in range(config.epoch):
         epoch_loss_D = 0
         epoch_loss_ajrnn = 0
+        epoch_loss_cls = 0
+        epoch_loss_imp = 0
+        epoch_loss_adv = 0
         samples = 0
         correct = 0
         n_batches = 0
+        all_preds = []
+        all_targets = []
 
         print(f'Epoch {epoch+1}/{config.epoch}: ')
         for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
@@ -201,6 +221,8 @@ def main(config):
                 probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 correct += torch.sum((preds == targets).float()).detach().item()
+                all_preds.append(preds)
+                all_targets.append(targets)
 
             #loss calculations
             l_D = loss_D(scores,masks)
@@ -209,13 +231,6 @@ def main(config):
             D_optim.zero_grad()
             l_D.backward(retain_graph=True)
 
-            '''
-            for p in D.parameters():
-                print("BEFORE L-AJRNN")
-                print(p.grad)
-                break
-            '''
-
             epoch_loss_D += l_D.detach().cpu().item()
 
             # Combined loss
@@ -223,6 +238,9 @@ def main(config):
             l_cls = loss_cls(logits,targets)
             l_adv = loss_adv(scores,masks)
             l_ajrnn = l_cls + l_imp + config.lamda_D * l_adv
+            epoch_loss_cls += l_cls.detach().cpu().item()
+            epoch_loss_adv += l_adv.detach().cpu().item()
+            epoch_loss_imp += l_imp.detach().cpu().item()
             epoch_loss_ajrnn += l_ajrnn.detach().cpu().item()
 
             C_optim.zero_grad()
@@ -232,13 +250,6 @@ def main(config):
             l_ajrnn.backward()
             for p in D.parameters(): p.requires_grad_(True)
 
-            '''
-            for p in D.parameters():
-                print("AFTER L-AJRNN")
-                print(p.grad)
-                break
-            '''
-
             C_optim.step()
             G_optim.step()
             D_optim.step()
@@ -246,7 +257,16 @@ def main(config):
             n_batches += 1
         print(f'D Loss per batch: {epoch_loss_D/n_batches}')
         print(f'AJ-RNN Loss per batch: {epoch_loss_ajrnn/n_batches}')
+        print(f'Classification loss per batch: {epoch_loss_cls/n_batches}')
+        print(f'Imputation loss per batch: {epoch_loss_imp/n_batches}')
+        print(f'Adversarial loss per batch: {epoch_loss_adv/n_batches}')
         print(f'Train Accuracy: {correct/samples*100:.2f}%')
+    preds = torch.cat(all_preds, dim=0).detach().cpu().numpy()
+    targets = torch.cat(all_targets, dim=0).detach().cpu().numpy()
+    cm = confusion_matrix(targets, preds)
+    disp = ConfusionMatrixDisplay(cm)
+    disp.plot()
+    plt.show()
 
 
 if __name__ == "__main__":
