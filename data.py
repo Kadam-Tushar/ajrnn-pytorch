@@ -30,7 +30,8 @@ class ITSCDataset(Dataset):
         data_tensor = torch.from_numpy(self.data[idx, :, :])
         target = self.labels[idx]
 
-        mask_tensor = (torch.rand(data_tensor.shape[:-1]) < (1-self.missing_frac))
+        mask_tensor = (torch.rand(data_tensor.shape[0]-2) < (1-self.missing_frac))
         mask_tensor = mask_tensor.int()
+        mask_tensor = torch.cat((torch.ones(1), mask_tensor, torch.ones(1)), 0)
 
         return (data_tensor, mask_tensor, target)

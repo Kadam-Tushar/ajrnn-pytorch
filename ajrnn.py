@@ -17,7 +17,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def loss_D(scores, masks):
     n = scores.shape[0]
-    loss = torch.sum((1-masks[:, 1:]) * torch.log(1-torch.sigmoid(scores)))
+    loss = torch.sum((1-masks[:, 1:]) * torch.log((1-torch.sigmoid(scores)).clamp(min=1e-4)))
     loss += torch.sum(masks[:, 1:] * torch.log(torch.sigmoid(scores)))
     loss /= -n
 
@@ -25,16 +25,22 @@ def loss_D(scores, masks):
 
 def loss_adv(scores, masks):
     n = scores.shape[0]
-    return torch.sum((1-masks[:, 1:]) * torch.log(1-torch.sigmoid(scores)))/n
+    return torch.sum((1-masks[:, 1:]) * torch.log((1-torch.sigmoid(scores)).clamp(min=1e-4)))/n
 
 def loss_cls(logits, labels):
     return nn.functional.cross_entropy(logits, labels)
 
-def loss_imp(completed_sequence, imputation_sequence, masks):
-    batch_size = completed_sequence.shape[0]
-    return torch.mean(
-            torch.square((completed_sequence-imputation_sequence)*masks[:, 1:, None])
-           ) / batch_size
+def loss_imp(completed_seq, imputation_seq, masks):
+    completed_seq_tensor = torch.cat(completed_seq, dim=1)
+    imputation_seq_tensor = torch.cat(imputation_seq, dim=1)
+    n = completed_seq_tensor.shape[0]
+    #print(completed_seq[0].shape)
+    #print(completed_seq_tensor.shape)
+    return torch.sum(
+            torch.square(
+             (completed_seq_tensor-imputation_seq_tensor)*masks[:, 1:, None]
+            )
+           )/n
 
 '''
 class Config(object):
@@ -78,25 +84,30 @@ class Generator(nn.Module):
         # x is a batch of complete sequences, each of length num_steps
         # masks is a batch of masks for each sequence
         batch_size = x.shape[0]
-        imputation_sequence = torch.zeros(
-            batch_size, self.num_steps-1, self.input_dimension_size
-        ).to(device)
-        completed_sequence = torch.zeros(
-            batch_size, self.num_steps-1, self.input_dimension_size
-        ).to(device)
+        imputation_sequence = []
+        completed_sequence = []
 
         hidden_state = self.init_hidden(batch_size).to(device)
         for time_step in range(self.num_steps):
-            for layer in range(self.layer_num):
-                hidden_state = self.rnn_layers[layer](x[:, time_step, :], hidden_state)
+            if time_step == 0:
+                for layer in range(self.layer_num):
+                    hidden_state = self.rnn_layers[layer](x[:, 0, :], hidden_state)
+            else:
+                for layer in range(self.layer_num):
+                    hidden_state = self.rnn_layers[layer](completed_sequence[time_step-1][:, 0, :], hidden_state)
+
 
             if time_step < self.num_steps - 1:
-                imputation_sequence[:, time_step, :] = \
-                    self.imp_projection(hidden_state)
-                completed_sequence[:, time_step, :] = \
-                    masks[:, time_step, None] * x[:, time_step, :] + \
-                    (1-masks[:, time_step, None])*imputation_sequence[:,time_step,:]
-
+                imputation_sequence.append(
+                    self.imp_projection(hidden_state).reshape(
+                        batch_size, 1, self.input_dimension_size
+                    )
+                )
+                completed_sequence.append(
+                        masks[:, time_step:time_step+1, None] * x[:,time_step:time_step+1,:]+ \
+                    (1-masks[:,time_step:time_step+1,None])*imputation_sequence[time_step]
+                )
+                next_input = completed_sequence[time_step]
         return hidden_state,completed_sequence, imputation_sequence
 
     def init_hidden(self, batch_size):
@@ -126,11 +137,13 @@ class Classifier(nn.Module):
     def __init__(self, config):
         super(Classifier, self).__init__()
         self.fc1 = nn.Linear(config.hidden_size,int(config.hidden_size)//2)
-        self.fc2 = nn.Linear(int(config.hidden_size)//2,config.class_num)
+        self.fc2 = nn.Linear(int(config.hidden_size)//2, 10)
+        self.fc3 = nn.Linear(10, config.class_num)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
-        return self.fc2(x)
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
 
 def main(config):
     '''
@@ -170,6 +183,7 @@ def main(config):
         correct = 0
         n_batches = 0
 
+        print(f'Epoch {epoch+1}/{config.epoch}: ')
         for batch_idx, (data,masks,targets) in enumerate(tqdm(train_loader)):
             # Get data to cuda if possible
             data = data.to(device=device)
@@ -179,11 +193,14 @@ def main(config):
 
             hidden_state, completed_seq, imputation_seq = G(data, masks)
             logits = C(hidden_state)
+
+            completed_seq_tensor = torch.cat(completed_seq, dim=1)
+            scores = D(completed_seq_tensor)
+
             with torch.no_grad():
-                probs = torch.softmax(logits.detach(), dim=1)
+                probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 correct += torch.sum((preds == targets).float()).detach().item()
-            scores = D(completed_seq)
 
             #loss calculations
             l_D = loss_D(scores,masks)
