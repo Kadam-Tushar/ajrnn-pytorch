@@ -17,7 +17,7 @@ The authors suggest to use an RNN to impute missing values and classify the time
 
 ## Model Architecture: 
 ![Arch](arch.png)
-
+[Image Credits](https://ieeexplore.ieee.org/document/9210118)
 
 
 ## Contributions:
