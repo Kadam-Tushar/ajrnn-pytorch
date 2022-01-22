@@ -21,8 +21,8 @@ The authors suggest to use an RNN to impute missing values and classify the time
 
 
 ## Contributions:
-- We implemented the proposed **AJ-RNN** model from scratch using PyTorch.
-- We prepared **synthetic ITSC** dataset based on datasets from the UCR archive and evaluated our implementations on the prepared data.
+- Implemented the proposed **AJ-RNN** model from scratch using PyTorch.
+- Prepared **synthetic ITSC** dataset based on datasets from the UCR archive and evaluated our implementations on the prepared data.
 - Informative visualisations: hidden states using **t-SNE plots**.
 - Performance analysis using **Confusion matrix**. 
 
